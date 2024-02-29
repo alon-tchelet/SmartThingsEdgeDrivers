@@ -295,6 +295,13 @@ end
 
 --- key input APIs ------------------------------------
 
+--- get supported keypad inputs from a Harman Luxury device on ip
+---@param ip string
+---@return table|nil, nil|string
+function APIs.GetSupportedKeypadInput(ip)
+  return invoke.Activate(ip, SMARTTHINGS_PATH .. "getSupportedKeypadInput")
+end
+
 --- invoke smartthings:sendKey on ip
 ---@param ip string
 ---@param key string

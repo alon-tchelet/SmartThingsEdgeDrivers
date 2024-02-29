@@ -244,10 +244,10 @@ local function device_init(driver, device)
   device:emit_event(capabilities.mediaInputSource.supportedInputSources(supportedInputSources))
 
   -- set supported keypad inputs
-  device:emit_event(capabilities.keypadInput.supportedKeyCodes(
-                      {"UP", "DOWN", "LEFT", "RIGHT", "SELECT", "BACK", "EXIT", "MENU", "SETTINGS", "HOME", "NUMBER0",
-                       "NUMBER1", "NUMBER2", "NUMBER3", "NUMBER4", "NUMBER5", "NUMBER6", "NUMBER7", "NUMBER8",
-                       "NUMBER9"}))
+  local supportedKeypadInput, err = api.GetSupportedKeypadInput(device_ip)
+  if not err and type(supportedKeypadInput) == "table" and next(supportedKeypadInput) ~= nil then
+    device:emit_event(capabilities.keypadInput.supportedKeyCodes(supportedKeypadInput))
+  end
 
   log.trace(string.format("device IP: %s", device_ip))
 
