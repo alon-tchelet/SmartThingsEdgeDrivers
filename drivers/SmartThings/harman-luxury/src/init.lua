@@ -172,7 +172,9 @@ local function message_sender(_, device, cmd)
   local device_ws = device:get_field(const.WEBSOCKET)
   local token = device:get_field(const.CREDENTIAL)
 
-  value[cmd.command] = cmd.args
+  value["capability"] = cmd.capability
+  value["command"] = cmd.command
+  value["args"] = cmd.args
   msg[const.CREDENTIAL] = token
   msg["msg"] = value
   msg = json.encode(msg)
