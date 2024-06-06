@@ -172,17 +172,18 @@ local function message_sender(_, device, cmd)
   local device_ws = device:get_field(const.WEBSOCKET)
   local token = device:get_field(const.CREDENTIAL)
 
-  value["capability"] = cmd.capability
-  value["command"] = cmd.command
-  value["args"] = cmd.args
+  value[const.CAPABILITY] = cmd.capability
+  value[const.COMMAND] = cmd.command
+  value[const.ARG] = cmd.args
+  msg[const.MESSAGE] = value
   msg[const.CREDENTIAL] = token
-  msg["msg"] = value
+
   msg = json.encode(msg)
 
   device_ws:send_msg(msg)
 end
 
-local function do_refresh(driver, device, cmd)
+local function do_refresh(_, device, cmd)
   log.info(string.format("Starting do_refresh: %s", device.label))
 
   -- restart websocket if needed

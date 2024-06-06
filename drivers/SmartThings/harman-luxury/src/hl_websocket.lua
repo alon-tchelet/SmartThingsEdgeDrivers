@@ -59,7 +59,7 @@ function HLWebsocket:handle_incoming_message(msg)
       self.device:emit_event(capabilities.mediaPlayback.playbackStatus.stopped())
     end
   end
-  -- check for a audio track data change
+  -- check for an audio track data change
   if msg[capabilities.audioTrackData.ID] then
     local audioTrackData = msg[capabilities.audioTrackData.ID]
     local trackdata = {}
@@ -88,9 +88,10 @@ function HLWebsocket:handle_incoming_message(msg)
     self.device:emit_event(capabilities.mediaTrackControl.supportedTrackControlCommands(
                              audioTrackData.supportedTrackControlCommands) or {"nextTrack", "previousTrack"})
     self.device:emit_event(capabilities.audioTrackData.totalTime(audioTrackData.totalTime or 0))
-    if audioTrackData.elapsedTime then
-      self.device:emit_event(capabilities.audioTrackData.elapsedTime(audioTrackData.elapsedTime))
-    end
+  end
+  -- check for an elapsed time change
+  if msg[capabilities.audioTrackData.ID] then
+    self.device:emit_event(capabilities.audioTrackData.elapsedTime(msg[capabilities.audioTrackData.ID]))
   end
   -- check for a media presets change
   if msg[capabilities.mediaPresets.ID] and type(msg[capabilities.mediaPresets.ID].presets) == "table" then
@@ -184,7 +185,7 @@ function HLWebsocket:start()
   -- send device token in first connection
   if not self.device:get_field(const.INITIALISED) then
     local token = self.device:get_field(const.CREDENTIAL)
-    msg[const.CREDENTIAL] = token
+    msg[const.NEW_CREDENTIAL] = token
     msg = json.encode(msg)
     websocket:send_text(msg)
     self.device:set_field(const.INITIALISED, true, {

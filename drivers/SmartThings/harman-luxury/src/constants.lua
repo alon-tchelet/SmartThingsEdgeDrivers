@@ -9,6 +9,13 @@ local Constants = {
   UPDATE_TIMER = "value_updates_timer",
   WEBSOCKET = "websocket",
 
+  -- message fields
+  NEW_CREDENTIAL = "new_credential",
+  MESSAGE = "message",
+  CAPABILITY = "capability",
+  COMMAND = "command",
+  ARG = "arg",
+
   -- intervals constants (in seconds)
   UPDATE_INTERVAL = 3,
   HEALTH_CHEACK_INTERVAL = 10,
