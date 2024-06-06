@@ -20,7 +20,7 @@ HLWebsocket.__index = HLWebsocket
 
 --- hendles capabilities and sends the commands to the device
 ---@param msg any device that sends the command
-function HLWebsocket:send_msg(msg)
+function HLWebsocket:send_msg_handler(msg)
   local dni = self.device.device_network_id
   log.debug(string.format("Sending this message to %s: %s", dni, st_utils.stringify_table(msg)))
   self.websocket:send_text(msg)
@@ -28,15 +28,21 @@ end
 
 --- handles listener event messages to update relevant SmartThings capbilities
 ---@param msg any|table
-function HLWebsocket:handle_incoming_message(msg)
-  if msg["disconnect"] then
-    local dni = self.device.device_network_id
-    log.info(string.format("%s is being disconnected by device (likely a new hub has added it)", dni))
-    -- clear token - device will remain offline until removed and added again
-    self.device:set_field(const.CREDENTIAL, nil, {
-      persist = true,
-    })
-    self:stop()
+function HLWebsocket:received_msg_handler(msg)
+  if msg[const.CREDENTIAL] then
+    -- the device updates all WebSockets when it registers a new credential token. If this hub no longer holds the token
+    -- disconnect it
+    local currentToken = self.device:get_field(const.CREDENTIAL)
+    if msg[const.CREDENTIAL] ~= currentToken then
+      local dni = self.device.device_network_id
+      log.info(string.format("%s is being disconnected by device (likely a new hub has added it)", dni))
+      -- clear token - device will remain offline until removed and added again
+      self.device:set_field(const.CREDENTIAL, nil, {
+        persist = true,
+      })
+      self:stop()
+      return
+    end
   end
   -- check for a power state change
   if msg[capabilities.switch.ID] then
@@ -46,6 +52,7 @@ function HLWebsocket:handle_incoming_message(msg)
     elseif powerState == capabilities.switch.commands.off.NAME then
       self.device:emit_event(capabilities.switch.switch.off())
     end
+    return
   end
   -- check for a player state change
   if msg[capabilities.mediaPlayback.ID] then
@@ -53,15 +60,20 @@ function HLWebsocket:handle_incoming_message(msg)
     if playerState == capabilities.mediaPlayback.commands.play.NAME then
       self.device:emit_event(capabilities.mediaPlayback.playbackStatus.playing())
     elseif playerState == capabilities.mediaPlayback.commands.pause.NAME then
-      log.debug("playerState - changed to paused")
       self.device:emit_event(capabilities.mediaPlayback.playbackStatus.paused())
     else
       self.device:emit_event(capabilities.mediaPlayback.playbackStatus.stopped())
+      local stopTrackData = {}
+      stopTrackData["title"] = ""
+      self.device:emit_event(capabilities.audioTrackData.audioTrackData(stopTrackData))
+      self.device:emit_event(capabilities.audioTrackData.totalTime(0))
     end
+    return
   end
   -- check for an audio track data change
   if msg[capabilities.audioTrackData.ID] then
-    local audioTrackData = msg[capabilities.audioTrackData.ID]
+    local audioTrackData = msg[capabilities.audioTrackData.ID].audioTrackData
+    local totalTime = msg[capabilities.audioTrackData.ID].totalTime
     local trackdata = {}
     if type(audioTrackData.title) == "string" then
       trackdata.title = audioTrackData.title
@@ -80,30 +92,45 @@ function HLWebsocket:handle_incoming_message(msg)
     if type(audioTrackData.mediaSource) == "string" then
       trackdata.mediaSource = audioTrackData.mediaSource
     end
-    -- if track changed
     self.device:emit_event(capabilities.audioTrackData.audioTrackData(trackdata))
-
-    self.device:emit_event(capabilities.mediaPlayback.supportedPlaybackCommands(
-                             audioTrackData.supportedPlaybackCommands) or {"play", "stop", "pause"})
-    self.device:emit_event(capabilities.mediaTrackControl.supportedTrackControlCommands(
-                             audioTrackData.supportedTrackControlCommands) or {"nextTrack", "previousTrack"})
-    self.device:emit_event(capabilities.audioTrackData.totalTime(audioTrackData.totalTime or 0))
+    self.device:emit_event(capabilities.audioTrackData.totalTime(totalTime or 0))
+    return
   end
   -- check for an elapsed time change
-  if msg[capabilities.audioTrackData.ID] then
+  if msg[capabilities.audioTrackData.elapsedTime.NAME] then
     self.device:emit_event(capabilities.audioTrackData.elapsedTime(msg[capabilities.audioTrackData.ID]))
+    return
   end
   -- check for a media presets change
   if msg[capabilities.mediaPresets.ID] and type(msg[capabilities.mediaPresets.ID].presets) == "table" then
     self.device:emit_event(capabilities.mediaPresets.presets(msg[capabilities.mediaPresets.ID].presets))
+    return
+  end
+  -- check for a supported input sources change
+  if msg["supportedInputSources"] then
+    self.device:emit_event(capabilities.mediaInputSource.supportedInputSources(msg["supportedInputSources"]))
+    return
+  end
+  -- check for a supportedInputSources change
+  if msg["supportedTrackControlCommands"] then
+    self.device:emit_event(capabilities.mediaTrackControl.supportedTrackControlCommands(
+                             msg["supportedTrackControlCommands"]) or {})
+    return
+  end
+  -- check for a supported playback commands change
+  if msg["supportedPlaybackCommands"] then
+    self.device:emit_event(capabilities.mediaPlayback.supportedPlaybackCommands(msg["supportedPlaybackCommands"]) or {})
+    return
   end
   -- check for a media input source change
   if msg[capabilities.mediaInputSource.ID] then
     self.device:emit_event(capabilities.mediaInputSource.inputSource(msg[capabilities.mediaInputSource.ID]))
+    return
   end
   -- check for a volume value change
   if msg[capabilities.audioVolume.ID] then
     self.device:emit_event(capabilities.audioVolume.volume(msg[capabilities.audioVolume.ID]))
+    return
   end
   -- check for a mute value change
   if msg[capabilities.audioMute.ID] ~= nil then
@@ -112,6 +139,7 @@ function HLWebsocket:handle_incoming_message(msg)
     else
       self.device:emit_event(capabilities.audioMute.mute.unmuted())
     end
+    return
   end
 end
 
@@ -143,24 +171,34 @@ end
 --- functionto start the websocket connection
 --- @return boolean boolean
 function HLWebsocket:start()
+  if self.device:get_field(const.WEBSOCKET_INITIALISING) then
+    return false
+  end
+  self.device:set_field(const.WEBSOCKET_INITIALISING, true)
+
   local sock, err = socket.tcp()
   local ip = self.device:get_field(const.IP)
   local dni = self.device.device_network_id
+
   if not ip then
     log.error(string.format("Failed to start %s websocket connection, no ip address for device", dni))
+    self.device:set_field(const.WEBSOCKET_INITIALISING, false)
     return false
   end
   log.info(string.format("%s starting websocket client on %s", dni, ip))
   if err then
     log.error(string.format("%s failed to get tcp socket: %s", dni, err))
+    self.device:set_field(const.WEBSOCKET_INITIALISING, false)
     return false
   end
   sock:settimeout(const.HEALTH_CHEACK_INTERVAL)
-  local config = Config.default():keep_alive(const.HEALTH_CHEACK_INTERVAL * 2)
+  local token = self.device:get_field(const.CREDENTIAL)
+  local config = Config.default():extension(token):keep_alive(const.HEALTH_CHEACK_INTERVAL * 3)
   local websocket = ws.client(sock, "/", config)
   websocket:register_message_cb(function(msg)
     log.trace(string.format("%s received websocket message: %s", dni, msg.data))
-    self:handle_incoming_message(json.decode(msg.data))
+    local jsonMsg = json.decode(msg.data)
+    self:received_msg_handler(jsonMsg)
   end):register_error_cb(function(err)
     log.error(string.format("%s Websocket error: %s", dni, err))
     if err and (err:match("closed") or err:match("no response to keep alive ping commands")) then
@@ -179,14 +217,15 @@ function HLWebsocket:start()
   _, err = websocket:connect(ip, const.WS_PORT)
   if err then
     log.error(string.format("%s failed to connect websocket: %s", dni, err))
+    self.device:set_field(const.WEBSOCKET_INITIALISING, false)
     return false
   end
   local msg = {}
   -- send device token in first connection
   if not self.device:get_field(const.INITIALISED) then
-    local token = self.device:get_field(const.CREDENTIAL)
     msg[const.NEW_CREDENTIAL] = token
     msg = json.encode(msg)
+    log.info(string.format("%s Sending token: %s", dni, msg))
     websocket:send_text(msg)
     self.device:set_field(const.INITIALISED, true, {
       persist = true,
@@ -196,6 +235,12 @@ function HLWebsocket:start()
   self._stopped = false
   self.websocket = websocket
   self.device:online()
+  self.device:set_field(const.WEBSOCKET_INITIALISING, false)
+  self.driver:inject_capability_command(self.device, {
+    capability = capabilities.refresh.ID,
+    command = capabilities.refresh.commands.refresh.NAME,
+    args = {},
+  })
   return true
 end
 

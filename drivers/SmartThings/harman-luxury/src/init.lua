@@ -5,7 +5,6 @@
 local Driver = require "st.driver"
 local capabilities = require "st.capabilities"
 local json = require "st.json"
-local st_utils = require "st.utils"
 local log = require "log"
 local socket = require "cosock.socket"
 local cosock = require "cosock"
@@ -16,99 +15,81 @@ local hlws = require "hl_websocket"
 local api = require "api.apis"
 local const = require "constants"
 
+local st_utils = require "st.utils"
+
 ----------------------------------------------------------
 -- Device Functions
 ----------------------------------------------------------
 
-local function device_removed(_, device)
-  local device_dni = device.device_network_id
-  log.info(string.format("Device removed - dni=\"%s\"", device_dni))
-  -- close websocket
+--- handler that builds the JSON to send to the device through the WebSocket
+---@param device any
+---@param cmd any
+local function message_sender(_, device, cmd)
+  local msg, value = {}, {}
   local device_ws = device:get_field(const.WEBSOCKET)
-  if device_ws then
-    device_ws:stop()
-  end
+  local token = device:get_field(const.CREDENTIAL)
+
+  value[const.CAPABILITY] = cmd.capability or nil
+  value[const.COMMAND] = cmd.command or nil
+  value[const.ARG] = cmd.args or nil
+  msg[const.MESSAGE] = value
+  msg[const.CREDENTIAL] = token
+
+  msg = json.encode(msg)
+
+  device_ws:send_msg_handler(msg)
 end
 
-local function refresh(_, device)
-  local ip = device:get_field(const.IP)
-
-  -- check and update device status
-  local power_state
-  power_state, _ = api.GetPowerState(ip)
-  if power_state then
-    log.debug(string.format("Current power state: %s", power_state))
-
-    if power_state == "online" then
-      device:emit_event(capabilities.switch.switch.on())
-      local player_state, audioTrackData
-
-      -- get player state
-      player_state, _ = api.GetPlayerState(ip)
-      if player_state then
-        if player_state == "playing" then
-          device:emit_event(capabilities.mediaPlayback.playbackStatus.playing())
-        elseif player_state == "paused" then
-          device:emit_event(capabilities.mediaPlayback.playbackStatus.paused())
-        else
-          device:emit_event(capabilities.mediaPlayback.playbackStatus.stopped())
-        end
-      end
-
-      -- get audio track data
-      audioTrackData, _ = api.getAudioTrackData(ip)
-      if audioTrackData then
-        device:emit_event(capabilities.audioTrackData.audioTrackData(audioTrackData.trackdata))
-        device:emit_event(capabilities.mediaPlayback.supportedPlaybackCommands(
-                            audioTrackData.supportedPlaybackCommands))
-        device:emit_event(capabilities.mediaTrackControl.supportedTrackControlCommands(
-                            audioTrackData.supportedTrackControlCommands))
-        device:emit_event(capabilities.audioTrackData.totalTime(audioTrackData.totalTime or 0))
-      end
-    elseif device:get_field(const.STATUS) then
-      device:emit_event(capabilities.switch.switch.off())
-      device:emit_event(capabilities.mediaPlayback.playbackStatus.stopped())
+--- ensure used presetId is really the Preset ID.
+-- When a user sets a preset selection from routines they can insert a custom string.
+-- Here we try to guess if the string matches any of the existing presets
+local function do_play_preset(_, device, cmd)
+  log.info(string.format("Starting do_play_preset: %s", device.label))
+  -- send API to play media preset
+  local presetId = cmd.args.presetId:lower():gsub("preset", ""):gsub("%W", "")
+  local mediaPresets = device:get_latest_state("main", capabilities.mediaPresets.ID,
+                                               capabilities.mediaPresets.presets.NAME)
+  for _, preset in pairs(mediaPresets) do
+    local id = preset.id
+    local name = preset.name:lower():gsub("preset", ""):gsub("%W", "")
+    if id == presetId or name == presetId then
+      cmd.args.presetId = id
+      message_sender(_, device, cmd)
+      return
     end
   end
+  log.warn(string.format("Couldn't find provided Media Preset: %s", cmd.args.presetId))
+end
 
-  -- get media presets list
-  local presets
-  presets, _ = api.GetMediaPresets(ip)
-  if presets then
-    device:emit_event(capabilities.mediaPresets.presets(presets))
-  end
+--- checks the health of the websocket connection and triggers the device to send all current values
+local function do_refresh(_, device, cmd)
+  log.info(string.format("Starting do_refresh: %s", device.label))
 
-  -- check and update device volume and mute status
-  local vol, mute
-  vol, _ = api.GetVol(ip)
-  if vol then
-    device:emit_event(capabilities.audioVolume.volume(vol))
-  end
-  mute, _ = api.GetMute(ip)
-  if type(mute) == "boolean" then
-    if mute then
-      device:emit_event(capabilities.audioMute.mute.muted())
-    else
-      device:emit_event(capabilities.audioMute.mute.unmuted())
+  -- restart websocket if needed
+  local device_ws = device:get_field(const.WEBSOCKET)
+  if device_ws then
+    if device_ws.websocket == nil then
+      device.log.info("Trying to restart websocket client for device updates")
+      device_ws:stop()
+      socket.sleep(1) -- give time for Lustre to close the websocket
+      if not device_ws:start() then
+        log.warn(string.format("%s failed to restart listening websocket client for device updates",
+                               device.device_network_id))
+        return
+      end
     end
-  end
-
-  -- check and update device media input source
-  local inputSource
-  inputSource, _ = api.GetInputSource(ip)
-  if inputSource then
-    device:emit_event(capabilities.mediaInputSource.inputSource(inputSource))
+    message_sender(_, device, cmd)
   end
 end
 
 local function device_init(driver, device)
   log.info(string.format("Initiating device: %s", device.label))
 
-  local device_ip = device:get_field(const.IP)
   local device_dni = device.device_network_id
   if driver.datastore.discovery_cache[device_dni] then
     log.warn("set unsaved device field")
     discovery.set_device_field(driver, device)
+    discovery.joined_device[device_dni] = nil
   end
 
   -- start websocket
@@ -125,79 +106,53 @@ local function device_init(driver, device)
       end
       socket.sleep(const.RETRY_CONNECT)
     end
-  end)
+  end, string.format("%s Initialising WebSocket connection to device", device_dni))
+end
 
-  -- set supported default media playback commands
-  device:emit_event(capabilities.mediaPlayback.supportedPlaybackCommands(
-                      {capabilities.mediaPlayback.commands.play.NAME, capabilities.mediaPlayback.commands.pause.NAME,
-                       capabilities.mediaPlayback.commands.stop.NAME}))
-  device:emit_event(capabilities.mediaTrackControl.supportedTrackControlCommands(
-                      {capabilities.mediaTrackControl.commands.nextTrack.NAME,
-                       capabilities.mediaTrackControl.commands.previousTrack.NAME}))
-
-  -- set supported input sources
-  local supportedInputSources, _ = api.GetSupportedInputSources(device_ip)
-  device:emit_event(capabilities.mediaInputSource.supportedInputSources(supportedInputSources))
-
-  -- set supported keypad inputs
-  device:emit_event(capabilities.keypadInput.supportedKeyCodes(
-                      {"UP", "DOWN", "LEFT", "RIGHT", "SELECT", "BACK", "EXIT", "MENU", "SETTINGS", "HOME", "NUMBER0",
-                       "NUMBER1", "NUMBER2", "NUMBER3", "NUMBER4", "NUMBER5", "NUMBER6", "NUMBER7", "NUMBER8",
-                       "NUMBER9"}))
-
-  refresh(driver, device)
+local function generate_token()
+  math.randomseed(os.time())
+  local token = ""
+  for i = 1, 16, 1 do
+    local char = math.random(0, 0xF)
+    token = string.format("%s%x", token, char)
+  end
+  return token
 end
 
 local function device_added(driver, device)
   log.info(string.format("Device added: %s", device.label))
-  discovery.set_device_field(driver, device)
-  local device_dni = device.device_network_id
-  discovery.joined_device[device_dni] = nil
-  -- ensuring device is initialised
+
+  -- generate device credentaial token only if the device isn't initialised and doesn't already have a token
+  if not device:get_field(const.CREDENTIAL) and not device:get_field(const.INITIALISED) then
+    local token = generate_token()
+    log.debug(string.format("%s Generated new token with value: %s", device.device_network_id, token))
+    device:set_field(const.CREDENTIAL, token, {
+      persist = true,
+    })
+  end
+
+  -- initialise device
   device_init(driver, device)
 end
 
+local function device_removed(_, device)
+  local device_dni = device.device_network_id
+  log.info(string.format("Device removed - dni=\"%s\"", device_dni))
+  -- close websocket
+  local device_ws = device:get_field(const.WEBSOCKET)
+  if device_ws then
+    device_ws:stop()
+  end
+end
+
 local function device_changeInfo(_, device, _, _)
-  log.info(string.format("Device added: %s", device.label))
+  log.info(string.format("Device changed info: %s", device.label))
   local ip = device:get_field(const.IP)
   local _, err = api.SetDeviceName(ip, device.label)
   if err then
     log.info(string.format("device_changeInfo: Error occured during attempt to change device name. Error message: %s",
                            err))
   end
-end
-
-local function message_sender(_, device, cmd)
-  local msg, value = {}, {}
-  local device_ws = device:get_field(const.WEBSOCKET)
-  local token = device:get_field(const.CREDENTIAL)
-
-  value[const.CAPABILITY] = cmd.capability
-  value[const.COMMAND] = cmd.command
-  value[const.ARG] = cmd.args
-  msg[const.MESSAGE] = value
-  msg[const.CREDENTIAL] = token
-
-  msg = json.encode(msg)
-
-  device_ws:send_msg(msg)
-end
-
-local function do_refresh(_, device, cmd)
-  log.info(string.format("Starting do_refresh: %s", device.label))
-
-  -- restart websocket if needed
-  local device_ws = device:get_field(const.WEBSOCKET)
-  if device_ws and (device_ws:is_stopped() or device_ws.websocket == nil) then
-    device.log.info("Trying to restart websocket client for device updates")
-    device_ws:stop()
-    socket.sleep(1) -- give time for Lustre to close the websocket
-    if not device_ws:start() then
-      log.warn("%s failed to restart listening websocket client for device updates", device.device_network_id)
-      return
-    end
-  end
-  message_sender(_, device, cmd)
 end
 
 ----------------------------------------------------------
@@ -208,8 +163,8 @@ end
 local driver = Driver("Harman Luxury", {
   discovery = discovery.discovery_handler,
   lifecycle_handlers = {
-    init = device_init,
     added = device_added,
+    init = device_init,
     removed = device_removed,
     infoChanged = device_changeInfo,
   },
@@ -235,7 +190,7 @@ local driver = Driver("Harman Luxury", {
       [capabilities.mediaInputSource.commands.setInputSource.NAME] = message_sender,
     },
     [capabilities.mediaPresets.ID] = {
-      [capabilities.mediaPresets.commands.playPreset.NAME] = message_sender,
+      [capabilities.mediaPresets.commands.playPreset.NAME] = do_play_preset,
     },
     [capabilities.audioNotification.ID] = {
       [capabilities.audioNotification.commands.playTrack.NAME] = message_sender,
@@ -250,9 +205,6 @@ local driver = Driver("Harman Luxury", {
     [capabilities.mediaTrackControl.ID] = {
       [capabilities.mediaTrackControl.commands.nextTrack.NAME] = message_sender,
       [capabilities.mediaTrackControl.commands.previousTrack.NAME] = message_sender,
-    },
-    [capabilities.keypadInput.ID] = {
-      [capabilities.keypadInput.commands.sendKey.NAME] = message_sender,
     },
   },
   supported_capabilities = {capabilities.switch, capabilities.audioMute, capabilities.audioVolume,

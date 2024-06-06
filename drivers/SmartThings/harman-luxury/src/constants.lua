@@ -8,6 +8,7 @@ local Constants = {
   HEALTH_TIMER = "health_timer",
   UPDATE_TIMER = "value_updates_timer",
   WEBSOCKET = "websocket",
+  WEBSOCKET_INITIALISING = "websocket_initialising",
 
   -- message fields
   NEW_CREDENTIAL = "new_credential",
@@ -20,8 +21,8 @@ local Constants = {
   UPDATE_INTERVAL = 3,
   HEALTH_CHEACK_INTERVAL = 10,
   HTTP_TIMEOUT = 5,
-  RETRY_CONNECT = 3,
-  RECONNECT_PERIOD = 30,
+  RETRY_CONNECT = 10,
+  RECONNECT_PERIOD = 15,
 
   -- discovery constants
   SERVICE_TYPE = "_sue-st._tcp",

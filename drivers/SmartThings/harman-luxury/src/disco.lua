@@ -2,7 +2,6 @@ local mdns = require "st.mdns"
 local socket = require "cosock.socket"
 local log = require "log"
 
-local api = require "api.apis"
 local disco_helper = require "disco_helper"
 local devices = require "devices"
 local const = require "constants"
@@ -28,18 +27,6 @@ local function try_add_device(driver, device_dni, device_params)
   return true
 end
 
-local function generate_token(device)
-  local device_dni = device.device_network_id
-  math.randomseed(os.time())
-  local token = ""
-  for i = 1, 16, 1 do
-    local char = math.random(0, 0xF)
-    token = string.format("%s%x", token, char)
-  end
-  log.debug(string.format("%s Generated new token with value: %s", device_dni, token))
-  return token
-end
-
 function Discovery.set_device_field(driver, device)
   log.info(string.format("set_device_field : dni=%s", device.device_network_id))
   local device_cache_value = driver.datastore.discovery_cache[device.device_network_id]
@@ -52,12 +39,6 @@ function Discovery.set_device_field(driver, device)
     persist = true,
   })
   device:set_field(const.DEVICE_INFO, device_cache_value.device_info, {
-    persist = true,
-  })
-  device:set_field(const.CREDENTIAL, generate_token(device), {
-    persist = true,
-  })
-  device:set_field(const.INITIALISED, false, {
     persist = true,
   })
 end
@@ -118,25 +99,12 @@ local function discovery_device(driver)
   end
 end
 
-function Discovery.find_ip_table()
-  log.info("Discovery.find_ip_table")
-
-  local dni_params_table = find_params_table()
-
-  local dni_ip_table = {}
-  for dni, params in pairs(dni_params_table) do
-    dni_ip_table[dni] = params.ip
-  end
-
-  return dni_ip_table
-end
-
 function Discovery.discovery_handler(driver, _, should_continue)
   log.info("Starting Harman Luxury discovery")
 
   while should_continue() do
     discovery_device(driver)
-    socket.sleep(0.5)
+    socket.sleep(3)
   end
   log.info("Ending Harman Luxury discovery")
 end
