@@ -4,6 +4,7 @@
 -- SmartThings inclusions
 local Driver = require "st.driver"
 local capabilities = require "st.capabilities"
+local json = require "st.json"
 local st_utils = require "st.utils"
 local log = require "log"
 local socket = require "cosock.socket"
@@ -11,8 +12,7 @@ local cosock = require "cosock"
 
 -- local Harman Luxury inclusions
 local discovery = require "disco"
-local handlers = require "handlers"
-local listener = require "listener"
+local hlws = require "hl_websocket"
 local api = require "api.apis"
 local const = require "constants"
 
@@ -23,9 +23,11 @@ local const = require "constants"
 local function device_removed(_, device)
   local device_dni = device.device_network_id
   log.info(string.format("Device removed - dni=\"%s\"", device_dni))
-  -- close websocket listener
-  local device_listener = device:get_field(const.LISTENER)
-  if device_listener then device_listener:stop() end
+  -- close websocket
+  local device_ws = device:get_field(const.WEBSOCKET)
+  if device_ws then
+    device_ws:stop()
+  end
 end
 
 local function refresh(_, device)
@@ -109,12 +111,12 @@ local function device_init(driver, device)
     discovery.set_device_field(driver, device)
   end
 
-  -- start websocket listener
+  -- start websocket
   cosock.spawn(function()
     while true do
-      local device_listener = listener.create_device_event_listener(driver, device)
-      device:set_field(const.LISTENER, device_listener)
-      if device_listener:start() then
+      local device_ws = hlws.create_device_websocket(driver, device)
+      device:set_field(const.WEBSOCKET, device_ws)
+      if device_ws:start() then
         log.info(string.format("%s successfully connected to websocket", device_dni))
         break
       else
@@ -165,22 +167,34 @@ local function device_changeInfo(_, device, _, _)
   end
 end
 
-local function do_refresh(driver, device, _)
+local function message_sender(_, device, cmd)
+  local msg, value = {}, {}
+  local device_ws = device:get_field(const.WEBSOCKET)
+  local token = device:get_field(const.CREDENTIAL)
+
+  value[cmd.command] = cmd.args
+  msg[const.CREDENTIAL] = token
+  msg["msg"] = value
+  msg = json.encode(msg)
+
+  device_ws:send_msg(msg)
+end
+
+local function do_refresh(driver, device, cmd)
   log.info(string.format("Starting do_refresh: %s", device.label))
 
-  -- check and update device values
-  refresh(driver, device)
-
-  -- restart listener if needed
-  local device_listener = device:get_field(const.LISTENER)
-  if device_listener and (device_listener:is_stopped() or device_listener.websocket == nil) then
-    device.log.info("Restarting listening websocket client for device updates")
-    device_listener:stop()
+  -- restart websocket if needed
+  local device_ws = device:get_field(const.WEBSOCKET)
+  if device_ws and (device_ws:is_stopped() or device_ws.websocket == nil) then
+    device.log.info("Trying to restart websocket client for device updates")
+    device_ws:stop()
     socket.sleep(1) -- give time for Lustre to close the websocket
-    if not device_listener:start() then
+    if not device_ws:start() then
       log.warn("%s failed to restart listening websocket client for device updates", device.device_network_id)
+      return
     end
   end
+  message_sender(_, device, cmd)
 end
 
 ----------------------------------------------------------
@@ -201,41 +215,41 @@ local driver = Driver("Harman Luxury", {
       [capabilities.refresh.commands.refresh.NAME] = do_refresh,
     },
     [capabilities.switch.ID] = {
-      [capabilities.switch.commands.on.NAME] = handlers.handle_on,
-      [capabilities.switch.commands.off.NAME] = handlers.handle_off,
+      [capabilities.switch.commands.on.NAME] = message_sender,
+      [capabilities.switch.commands.off.NAME] = message_sender,
     },
     [capabilities.audioMute.ID] = {
-      [capabilities.audioMute.commands.mute.NAME] = handlers.handle_mute,
-      [capabilities.audioMute.commands.unmute.NAME] = handlers.handle_unmute,
-      [capabilities.audioMute.commands.setMute.NAME] = handlers.handle_set_mute,
+      [capabilities.audioMute.commands.mute.NAME] = message_sender,
+      [capabilities.audioMute.commands.unmute.NAME] = message_sender,
+      [capabilities.audioMute.commands.setMute.NAME] = message_sender,
     },
     [capabilities.audioVolume.ID] = {
-      [capabilities.audioVolume.commands.volumeUp.NAME] = handlers.handle_volume_up,
-      [capabilities.audioVolume.commands.volumeDown.NAME] = handlers.handle_volume_down,
-      [capabilities.audioVolume.commands.setVolume.NAME] = handlers.handle_set_volume,
+      [capabilities.audioVolume.commands.volumeUp.NAME] = message_sender,
+      [capabilities.audioVolume.commands.volumeDown.NAME] = message_sender,
+      [capabilities.audioVolume.commands.setVolume.NAME] = message_sender,
     },
     [capabilities.mediaInputSource.ID] = {
-      [capabilities.mediaInputSource.commands.setInputSource.NAME] = handlers.handle_setInputSource,
+      [capabilities.mediaInputSource.commands.setInputSource.NAME] = message_sender,
     },
     [capabilities.mediaPresets.ID] = {
-      [capabilities.mediaPresets.commands.playPreset.NAME] = handlers.handle_play_preset,
+      [capabilities.mediaPresets.commands.playPreset.NAME] = message_sender,
     },
     [capabilities.audioNotification.ID] = {
-      [capabilities.audioNotification.commands.playTrack.NAME] = handlers.handle_audio_notification,
-      [capabilities.audioNotification.commands.playTrackAndResume.NAME] = handlers.handle_audio_notification,
-      [capabilities.audioNotification.commands.playTrackAndRestore.NAME] = handlers.handle_audio_notification,
+      [capabilities.audioNotification.commands.playTrack.NAME] = message_sender,
+      [capabilities.audioNotification.commands.playTrackAndResume.NAME] = message_sender,
+      [capabilities.audioNotification.commands.playTrackAndRestore.NAME] = message_sender,
     },
     [capabilities.mediaPlayback.ID] = {
-      [capabilities.mediaPlayback.commands.pause.NAME] = handlers.handle_pause,
-      [capabilities.mediaPlayback.commands.play.NAME] = handlers.handle_play,
-      [capabilities.mediaPlayback.commands.stop.NAME] = handlers.handle_stop,
+      [capabilities.mediaPlayback.commands.pause.NAME] = message_sender,
+      [capabilities.mediaPlayback.commands.play.NAME] = message_sender,
+      [capabilities.mediaPlayback.commands.stop.NAME] = message_sender,
     },
     [capabilities.mediaTrackControl.ID] = {
-      [capabilities.mediaTrackControl.commands.nextTrack.NAME] = handlers.handle_next_track,
-      [capabilities.mediaTrackControl.commands.previousTrack.NAME] = handlers.handle_previous_track,
+      [capabilities.mediaTrackControl.commands.nextTrack.NAME] = message_sender,
+      [capabilities.mediaTrackControl.commands.previousTrack.NAME] = message_sender,
     },
     [capabilities.keypadInput.ID] = {
-      [capabilities.keypadInput.commands.sendKey.NAME] = handlers.handle_send_key,
+      [capabilities.keypadInput.commands.sendKey.NAME] = message_sender,
     },
   },
   supported_capabilities = {capabilities.switch, capabilities.audioMute, capabilities.audioVolume,

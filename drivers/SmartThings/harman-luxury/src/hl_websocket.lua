@@ -7,46 +7,52 @@ local Config = require"lustre".Config
 local CloseCode = require"lustre.frame.close".CloseCode
 local capabilities = require "st.capabilities"
 local json = require "st.json"
+local st_utils = require "st.utils"
 local socket = require "cosock.socket"
 
---- a websocket listener to get updates from Harman Luxury devices
---- @class harman-luxury.Listener
+--- a websocket to get updates from Harman Luxury devices
+--- @class harman-luxury.HLWebsocket
 --- @field driver table the driver the device is a memeber of
---- @field device table the device the listener is listening for events
+--- @field device table the device the websocket is connected to
 --- @field websocket table|nil the websocket connection to the device
-local Listener = {}
-Listener.__index = Listener
+local HLWebsocket = {}
+HLWebsocket.__index = HLWebsocket
+
+--- hendles capabilities and sends the commands to the device
+---@param msg any device that sends the command
+function HLWebsocket:send_msg(msg)
+  local dni = self.device.device_network_id
+  log.debug(string.format("Sending this message to %s: %s", dni, st_utils.stringify_table(msg)))
+  self.websocket:send_text(msg)
+end
 
 --- handles listener event messages to update relevant SmartThings capbilities
 ---@param msg any|table
-function Listener:handle_message(msg)
-  -- get new token from device
-  if msg["token"] then
-    local newToken = msg["token"]
-    self.device:set_field(const.CREDENTIAL, newToken, {
-      persist = true,
-    })
-  end
+function HLWebsocket:handle_incoming_message(msg)
   if msg["disconnect"] then
     local dni = self.device.device_network_id
     log.info(string.format("%s is being disconnected by device (likely a new hub has added it)", dni))
+    -- clear token - device will remain offline until removed and added again
+    self.device:set_field(const.CREDENTIAL, nil, {
+      persist = true,
+    })
     self:stop()
   end
   -- check for a power state change
-  if msg["powerState"] then
-    local powerState = msg["powerState"]
-    if powerState == "online" then
+  if msg[capabilities.switch.ID] then
+    local powerState = msg[capabilities.switch.ID]
+    if powerState == capabilities.switch.commands.on.NAME then
       self.device:emit_event(capabilities.switch.switch.on())
-    elseif powerState == "offline" then
+    elseif powerState == capabilities.switch.commands.off.NAME then
       self.device:emit_event(capabilities.switch.switch.off())
     end
   end
   -- check for a player state change
-  if msg["playerState"] then
-    local playerState = msg["playerState"]
-    if playerState == "playing" then
+  if msg[capabilities.mediaPlayback.ID] then
+    local playerState = msg[capabilities.mediaPlayback.ID]
+    if playerState == capabilities.mediaPlayback.commands.play.NAME then
       self.device:emit_event(capabilities.mediaPlayback.playbackStatus.playing())
-    elseif playerState == "paused" then
+    elseif playerState == capabilities.mediaPlayback.commands.pause.NAME then
       log.debug("playerState - changed to paused")
       self.device:emit_event(capabilities.mediaPlayback.playbackStatus.paused())
     else
@@ -54,8 +60,8 @@ function Listener:handle_message(msg)
     end
   end
   -- check for a audio track data change
-  if msg["audioTrackData"] then
-    local audioTrackData = msg["audioTrackData"]
+  if msg[capabilities.audioTrackData.ID] then
+    local audioTrackData = msg[capabilities.audioTrackData.ID]
     local trackdata = {}
     if type(audioTrackData.title) == "string" then
       trackdata.title = audioTrackData.title
@@ -82,26 +88,25 @@ function Listener:handle_message(msg)
     self.device:emit_event(capabilities.mediaTrackControl.supportedTrackControlCommands(
                              audioTrackData.supportedTrackControlCommands) or {"nextTrack", "previousTrack"})
     self.device:emit_event(capabilities.audioTrackData.totalTime(audioTrackData.totalTime or 0))
-  end
-  -- check for a audio track data change
-  if msg["elapsedTime"] then
-    self.device:emit_event(capabilities.audioTrackData.elapsedTime(msg["elapsedTime"]))
+    if audioTrackData.elapsedTime then
+      self.device:emit_event(capabilities.audioTrackData.elapsedTime(audioTrackData.elapsedTime))
+    end
   end
   -- check for a media presets change
-  if msg["mediaPresets"] and type(msg["mediaPresets"].presets) == "table" then
-    self.device:emit_event(capabilities.mediaPresets.presets(msg["mediaPresets"].presets))
+  if msg[capabilities.mediaPresets.ID] and type(msg[capabilities.mediaPresets.ID].presets) == "table" then
+    self.device:emit_event(capabilities.mediaPresets.presets(msg[capabilities.mediaPresets.ID].presets))
   end
   -- check for a media input source change
-  if msg["mediaInputSource"] then
-    self.device:emit_event(capabilities.mediaInputSource.inputSource(msg["mediaInputSource"]))
+  if msg[capabilities.mediaInputSource.ID] then
+    self.device:emit_event(capabilities.mediaInputSource.inputSource(msg[capabilities.mediaInputSource.ID]))
   end
   -- check for a volume value change
-  if msg["volume"] then
-    self.device:emit_event(capabilities.audioVolume.volume(msg["volume"]))
+  if msg[capabilities.audioVolume.ID] then
+    self.device:emit_event(capabilities.audioVolume.volume(msg[capabilities.audioVolume.ID]))
   end
   -- check for a mute value change
-  if msg["mute"] ~= nil then
-    if msg["mute"] then
+  if msg[capabilities.audioMute.ID] ~= nil then
+    if msg[capabilities.audioMute.ID] then
       self.device:emit_event(capabilities.audioMute.mute.muted())
     else
       self.device:emit_event(capabilities.audioMute.mute.unmuted())
@@ -109,8 +114,8 @@ function Listener:handle_message(msg)
   end
 end
 
---- try reconnect webclient listener
-function Listener:try_reconnect()
+--- try reconnect webclient
+function HLWebsocket:try_reconnect()
   local retries = 0
   local dni = self.device.device_network_id
   local ip = self.device:get_field(const.IP)
@@ -136,15 +141,15 @@ end
 
 --- functionto start the websocket connection
 --- @return boolean boolean
-function Listener:start()
+function HLWebsocket:start()
   local sock, err = socket.tcp()
   local ip = self.device:get_field(const.IP)
   local dni = self.device.device_network_id
   if not ip then
-    log.error(string.format("Failed to start %s listener, no ip address for device", dni))
+    log.error(string.format("Failed to start %s websocket connection, no ip address for device", dni))
     return false
   end
-  log.info(string.format("%s starting websocket listening client on %s", dni, ip))
+  log.info(string.format("%s starting websocket client on %s", dni, ip))
   if err then
     log.error(string.format("%s failed to get tcp socket: %s", dni, err))
     return false
@@ -154,7 +159,7 @@ function Listener:start()
   local websocket = ws.client(sock, "/", config)
   websocket:register_message_cb(function(msg)
     log.trace(string.format("%s received websocket message: %s", dni, msg.data))
-    self:handle_message(json.decode(msg.data))
+    self:handle_incoming_message(json.decode(msg.data))
   end):register_error_cb(function(err)
     log.error(string.format("%s Websocket error: %s", dni, err))
     if err and (err:match("closed") or err:match("no response to keep alive ping commands")) then
@@ -175,6 +180,17 @@ function Listener:start()
     log.error(string.format("%s failed to connect websocket: %s", dni, err))
     return false
   end
+  local msg = {}
+  -- send device token in first connection
+  if not self.device:get_field(const.INITIALISED) then
+    local token = self.device:get_field(const.CREDENTIAL)
+    msg[const.CREDENTIAL] = token
+    msg = json.encode(msg)
+    websocket:send_text(msg)
+    self.device:set_field(const.INITIALISED, true, {
+      persist = true,
+    })
+  end
   log.info(string.format("%s Connected websocket successfully", dni))
   self._stopped = false
   self.websocket = websocket
@@ -182,20 +198,20 @@ function Listener:start()
   return true
 end
 
---- creates a listener object for the device
+--- creates a Harman Luxury websocket object for the device
 ---@param driver any
 ---@param device any
----@return Listener
-function Listener.create_device_event_listener(driver, device)
+---@return HLWebsocket
+function HLWebsocket.create_device_websocket(driver, device)
   return setmetatable({
     device = device,
     driver = driver,
     _stopped = true,
-  }, Listener)
+  }, HLWebsocket)
 end
 
---- stops webclient listener
-function Listener:stop()
+--- stops webclient
+function HLWebsocket:stop()
   local dni = self.device.device_network_id
   self._stopped = true
   if not self.websocket then
@@ -208,10 +224,10 @@ function Listener:stop()
   end
 end
 
---- tests if the listener is stopped or not
+--- tests if the websocket connection is stopped or not
 --- @return boolean isStopped
-function Listener:is_stopped()
+function HLWebsocket:is_stopped()
   return self._stopped
 end
 
-return Listener
+return HLWebsocket

@@ -3,9 +3,11 @@ local Constants = {
   IP = "device_ipv4",
   DEVICE_INFO = "device_info",
   CREDENTIAL = "credential",
+  INITIALISED = "initialised",
   STATUS = "status",
   HEALTH_TIMER = "health_timer",
   UPDATE_TIMER = "value_updates_timer",
+  WEBSOCKET = "websocket",
 
   -- intervals constants (in seconds)
   UPDATE_INTERVAL = 3,
@@ -21,7 +23,6 @@ local Constants = {
   DNI = "dni",
   MNID = "mnid",
   SETUP_ID = "setupid",
-  LISTENER = "listener",
 
   -- device setup constants
   DEFAULT_DEVICE_NAME = "HarmanLuxury",

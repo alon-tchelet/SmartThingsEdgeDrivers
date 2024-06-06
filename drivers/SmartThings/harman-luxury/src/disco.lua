@@ -28,6 +28,18 @@ local function try_add_device(driver, device_dni, device_params)
   return true
 end
 
+local function generate_token(device)
+  local device_dni = device.device_network_id
+  math.randomseed(os.time())
+  local token = ""
+  for i = 1, 16, 1 do
+    local char = math.random(0, 0xF)
+    token = string.format("%s%x", token, char)
+  end
+  log.debug(string.format("%s Generated new token with value: %s", device_dni, token))
+  return token
+end
+
 function Discovery.set_device_field(driver, device)
   log.info(string.format("set_device_field : dni=%s", device.device_network_id))
   local device_cache_value = driver.datastore.discovery_cache[device.device_network_id]
@@ -40,6 +52,12 @@ function Discovery.set_device_field(driver, device)
     persist = true,
   })
   device:set_field(const.DEVICE_INFO, device_cache_value.device_info, {
+    persist = true,
+  })
+  device:set_field(const.CREDENTIAL, generate_token(device), {
+    persist = true,
+  })
+  device:set_field(const.INITIALISED, false, {
     persist = true,
   })
 end
