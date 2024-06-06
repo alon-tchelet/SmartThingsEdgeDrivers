@@ -11,27 +11,19 @@ local Discovery = {
   joined_device = {},
 }
 
-local function update_device_discovery_cache(driver, dni, params, token)
+local function update_device_discovery_cache(driver, dni, params)
   log.info(string.format("update_device_discovery_cache for device dni: dni=%s, ip=%s", dni, params.ip))
   local device_info = devices.get_device_info(dni, params)
   driver.datastore.discovery_cache[dni] = {
     ip = params.ip,
     device_info = device_info,
-    credential = token,
   }
 end
 
 local function try_add_device(driver, device_dni, device_params)
   log.trace(string.format("try_add_device : dni=%s, ip=%s", device_dni, device_params.ip))
 
-  local token, err = api.InitCredentialsToken(device_params.ip)
-
-  if err then
-    log.error(string.format("failed to get credential token for dni=%s, ip=%s", device_dni, device_params.ip))
-    return false
-  end
-
-  update_device_discovery_cache(driver, device_dni, device_params, token)
+  update_device_discovery_cache(driver, device_dni, device_params)
   driver:try_create_device(driver.datastore.discovery_cache[device_dni].device_info)
   return true
 end
@@ -50,11 +42,6 @@ function Discovery.set_device_field(driver, device)
   device:set_field(const.DEVICE_INFO, device_cache_value.device_info, {
     persist = true,
   })
-  if device_cache_value.credential then
-    device:set_field(const.CREDENTIAL, device_cache_value.credential, {
-      persist = true,
-    })
-  end
 end
 
 local function find_params_table()

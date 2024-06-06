@@ -89,13 +89,6 @@ end
 --- get active credential token from a Harman Luxury device on ip
 ---@param ip string
 ---@return boolean|number|string|table|nil, nil|string
-function APIs.InitCredentialsToken(ip)
-  return invoke.Activate(ip, SMARTTHINGS_PATH .. "initCredentialsToken")
-end
-
---- get active credential token from a Harman Luxury device on ip
----@param ip string
----@return boolean|number|string|table|nil, nil|string
 function APIs.GetCredentialsToken(ip)
   return invoke.Activate(ip, SMARTTHINGS_PATH .. "getCredentialsToken")
 end
@@ -304,15 +297,6 @@ function APIs.InvokeSendKey(ip, key)
     NsdkSmartThingsKey = key,
   }
   return invoke.ActivateValue(ip, SMARTTHINGS_PATH .. "sendKey", value)
-end
-
---- check for values change APIs ------------------------------------
-
---- invoke smartthings:updateValues on ip
----@param ip string
----@return table|nil, nil|string
-function APIs.InvokeGetUpdates(ip)
-  return invoke.Activate(ip, SMARTTHINGS_PATH .. "updateValues")
 end
 
 return APIs
