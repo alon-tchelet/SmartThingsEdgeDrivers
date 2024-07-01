@@ -91,7 +91,9 @@ function HLWebsocket:received_msg_handler(msg)
       trackdata.mediaSource = audioTrackData.mediaSource
     end
     self.device:emit_event(capabilities.audioTrackData.audioTrackData(trackdata))
-    self.device:emit_event(capabilities.audioTrackData.totalTime(totalTime or 0))
+    if totalTime and totalTime ~= 0 then
+      self.device:emit_event(capabilities.audioTrackData.totalTime(totalTime))
+    end
   end
   -- check for an elapsed time change
   if msg[capabilities.audioTrackData.elapsedTime.NAME] then
